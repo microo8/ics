@@ -3,6 +3,7 @@ package ics
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -27,11 +28,12 @@ type scanner struct {
 func (s *scanner) next() item {
 	if s.prevItem == nil {
 		s.curItem = <-s.l.items
-		fmt.Println("item:", s.curItem)
+		fmt.Println(s.curItem)
 		return s.curItem
 	}
 	i := *s.prevItem
 	s.prevItem = nil
+	fmt.Println(i)
 	return i
 }
 
@@ -39,7 +41,7 @@ func (s *scanner) backup() {
 	s.prevItem = &s.curItem
 }
 
-func parseStringProperty(name string, s *scanner) (string, error) {
+func (s *scanner) stringProperty(name string) (string, error) {
 	if i := s.next(); i.typ != itemColon {
 		return "", fmt.Errorf("unexpected (%s) after %s, expected colon (:)", name, i.val)
 	}
@@ -48,6 +50,19 @@ func parseStringProperty(name string, s *scanner) (string, error) {
 		return "", fmt.Errorf("unexpected (%s) after %s:, expected string value", name, i.val)
 	}
 	return i.val, nil
+}
+
+func (s *scanner) xProperty() (string, string, error) {
+	i := s.next()
+	propName := i.val[2:]
+	if i := s.next(); i.typ != itemColon {
+		return "", "", fmt.Errorf("unexpected (%s) after X, expected colon (:)", i.val)
+	}
+	i = s.next()
+	if i.typ != itemString {
+		return "", "", fmt.Errorf("unexpected (%s) after X, expected string value", i.val)
+	}
+	return propName, i.val, nil
 }
 
 func parseCalendar(s *scanner) (*Calendar, error) {
@@ -65,42 +80,69 @@ func parseCalendar(s *scanner) (*Calendar, error) {
 		switch i.typ {
 		case itemError:
 			return nil, fmt.Errorf(i.val)
+		case itemEnd:
+			if i := s.next(); i.typ != itemColon {
+				return nil, fmt.Errorf("unexpected (%s) after END, expected colon (:)", i.val)
+			}
+			if i := s.next(); i.typ != itemVCalendar {
+				return nil, fmt.Errorf("unexpected (%s) after END:, expected VCALENDAR", i.val)
+			}
+			return cal, nil
 		case itemVersion:
-			val, err := parseStringProperty("VERSION", s)
+			val, err := s.stringProperty("VERSION")
 			if err != nil {
 				return nil, err
 			}
 			cal.Version = val
 		case itemProdID:
-			val, err := parseStringProperty("PRODID", s)
+			val, err := s.stringProperty("PRODID")
 			if err != nil {
 				return nil, err
 			}
 			cal.ProdID = val
 		case itemCalscale:
-			val, err := parseStringProperty("CALSCALE", s)
+			val, err := s.stringProperty("CALSCALE")
 			if err != nil {
 				return nil, err
 			}
 			cal.Calscale = val
 		case itemMethod:
-			val, err := parseStringProperty("METHOD", s)
+			val, err := s.stringProperty("METHOD")
 			if err != nil {
 				return nil, err
 			}
 			cal.Method = val
+		case itemX:
+			s.backup()
+			propName, val, err := s.xProperty()
+			if err != nil {
+				return nil, err
+			}
+			if cal.Properties == nil {
+				cal.Properties = make(map[string]string)
+			}
+			cal.Properties[propName] = val
 		case itemBegin:
 			if i := s.next(); i.typ != itemColon {
 				return nil, fmt.Errorf("unexpected (%s) after BEGIN, expected colon (:)", i.val)
 			}
-			if i := s.next(); i.typ != itemVEvent {
-				return nil, fmt.Errorf("unexpected (%s) after BEGIN:, expected VEVENT", i.val)
+			i := s.next()
+			switch i.typ {
+			case itemVEvent:
+				e, err := parseEvent(s)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing VEVENT: %s", err)
+				}
+				cal.Events = append(cal.Events, e)
+			case itemVTimeZone:
+				tz, err := parseTimeZone(s)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing VTIMEZONE: %s", err)
+				}
+				cal.TimeZone = tz
+			default:
+				return nil, fmt.Errorf("unexpected (%s) after BEGIN:, expected VEVENT or VTIMEZONE", i.val)
 			}
-			e, err := parseEvent(s)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing VEVENT: %s", err)
-			}
-			cal.Events = append(cal.Events, e)
 		default:
 			return nil, fmt.Errorf("unexpected item (%s) in VCALENDAR", i)
 		}
@@ -121,41 +163,57 @@ func parseEvent(s *scanner) (*Event, error) {
 			}
 			return e, nil
 		case itemSummary:
-			val, err := parseStringProperty("SUMMARY", s)
+			val, err := s.stringProperty("SUMMARY")
 			if err != nil {
 				return nil, err
 			}
 			e.Summary = val
 		case itemUID:
-			val, err := parseStringProperty("UID", s)
+			val, err := s.stringProperty("UID")
 			if err != nil {
 				return nil, err
 			}
 			e.UID = val
 		case itemStatus:
-			val, err := parseStringProperty("STATUS", s)
+			val, err := s.stringProperty("STATUS")
 			if err != nil {
 				return nil, err
 			}
 			e.Status = val
 		case itemTransp:
-			val, err := parseStringProperty("TRANSP", s)
+			val, err := s.stringProperty("TRANSP")
 			if err != nil {
 				return nil, err
 			}
 			e.Transp = val
 		case itemLocation:
-			val, err := parseStringProperty("LOCATION", s)
+			val, err := s.stringProperty("LOCATION")
 			if err != nil {
 				return nil, err
 			}
 			e.Location = val
 		case itemCategories:
-			val, err := parseStringProperty("CATEGORIES", s)
+			val, err := s.stringProperty("CATEGORIES")
 			if err != nil {
 				return nil, err
 			}
 			e.Categories = strings.Split(val, ",")
+		case itemDescription:
+			val, err := s.stringProperty("DESCRIPTION")
+			if err != nil {
+				return nil, err
+			}
+			e.Description = val
+		case itemURL:
+			val, err := s.stringProperty("URL")
+			if err != nil {
+				return nil, err
+			}
+			eventURL, err := url.Parse(val)
+			if err != nil {
+				return nil, err
+			}
+			e.URL = eventURL
 		case itemSequence:
 			if i := s.next(); i.typ != itemColon {
 				return nil, fmt.Errorf("unexpected (%s) after SEQUENCE, expected colon (:)", i.val)
@@ -183,40 +241,19 @@ func parseEvent(s *scanner) (*Event, error) {
 			}
 			e.Rrule = val
 		case itemDTStart:
-			if i := s.next(); i.typ != itemColon {
-				return nil, fmt.Errorf("unexpected (%s) after DTSTART, expected colon (:)", i.val)
-			}
-			i := s.next()
-			if i.typ != itemTime && i.typ != itemDate {
-				return nil, fmt.Errorf("unexpected (%s) after DTSTART date-time value", i.val)
-			}
-			t, err := parseDateTime(i.val)
+			t, err := parseDateTimeProperty(s, "DTSTART")
 			if err != nil {
 				return nil, err
 			}
 			e.DTStart = t
 		case itemDTEnd:
-			if i := s.next(); i.typ != itemColon {
-				return nil, fmt.Errorf("unexpected (%s) after DTEND, expected colon (:)", i.val)
-			}
-			i := s.next()
-			if i.typ != itemTime && i.typ != itemDate {
-				return nil, fmt.Errorf("unexpected (%s) after DTEND date-time value", i.val)
-			}
-			t, err := parseDateTime(i.val)
+			t, err := parseDateTimeProperty(s, "DTEND")
 			if err != nil {
 				return nil, err
 			}
 			e.DTEnd = t
 		case itemDTStamp:
-			if i := s.next(); i.typ != itemColon {
-				return nil, fmt.Errorf("unexpected (%s) after DTSTAMP, expected colon (:)", i.val)
-			}
-			i := s.next()
-			if i.typ != itemTime && i.typ != itemDate {
-				return nil, fmt.Errorf("unexpected (%s) after DTSTAMP date-time value", i.val)
-			}
-			t, err := parseDateTime(i.val)
+			t, err := parseDateTimeProperty(s, "DTSTAMP")
 			if err != nil {
 				return nil, err
 			}
@@ -233,9 +270,62 @@ func parseEvent(s *scanner) (*Event, error) {
 			if len(point) != 2 {
 				return nil, fmt.Errorf("not valid geo-point value (%s)", i.val)
 			}
+		case itemBegin:
+			if i := s.next(); i.typ != itemColon {
+				return nil, fmt.Errorf("unexpected (%s) after BEGIN, expected colon (:)", i.val)
+			}
+			i := s.next()
+			if i.typ != itemVAlarm {
+				return nil, fmt.Errorf("unexpected (%s) after BEGIN, expected VALARM", i.val)
+			}
+			alarm, err := parseAlarm(s)
+			if err != nil {
+				return nil, err
+			}
+			e.Alarm = alarm
 		default:
 			return nil, fmt.Errorf("unexpected item (%s) in VEVENT", i)
 		}
+	}
+}
+
+func parseDateTimeProperty(s *scanner, propertyName string) (time.Time, error) {
+	i := s.next()
+	switch i.typ {
+	case itemColon:
+		i := s.next()
+		if i.typ != itemTime && i.typ != itemDate {
+			return time.Time{}, fmt.Errorf("unexpected (%s) after %s date-time value", i.val, propertyName)
+		}
+		t, err := parseDateTime(i.val)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return t, nil
+	case itemSemiColon:
+		i := s.next()
+		if i.typ != itemTimeZone {
+			return time.Time{}, fmt.Errorf("unexpected (%s) after %s; expected TZID", i.val, propertyName)
+		}
+		loc, err := time.LoadLocation(i.val)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("error loading time-zone: %s", err)
+		}
+		i = s.next()
+		if i.typ != itemColon {
+			return time.Time{}, fmt.Errorf("unexpected (%s) after time-zone, expected colon (:)", i.val)
+		}
+		i = s.next()
+		if i.typ != itemTime && i.typ != itemDate {
+			return time.Time{}, fmt.Errorf("unexpected (%s) after %s date-time value", i.val, propertyName)
+		}
+		t, err := parseDateTime(i.val)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return t.In(loc), nil
+	default:
+		return time.Time{}, fmt.Errorf("unexpected (%s) after %s, expected colon (:)", i.val, propertyName)
 	}
 }
 
@@ -382,4 +472,77 @@ func parseDateTime(val string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse(IcsFormatDate, val)
+}
+
+func parseAlarm(s *scanner) (*Alarm, error) {
+	a := &Alarm{}
+	for i := s.next(); ; i = s.next() {
+		switch i.typ {
+		case itemEnd:
+			if i := s.next(); i.typ != itemColon {
+				return nil, fmt.Errorf("unexpected (%s) after END, expected colon (:)", i.val)
+			}
+			if i := s.next(); i.typ != itemVAlarm {
+				return nil, fmt.Errorf("unexpected (%s) after END:, expected VALARM", i.val)
+			}
+			return a, nil
+		default:
+			return nil, fmt.Errorf("unexpected item in VALARM: (%s)", i.val)
+		}
+	}
+}
+
+func parseTimeZone(s *scanner) (*TimeZone, error) {
+	tz := &TimeZone{}
+	for i := s.next(); ; i = s.next() {
+		switch i.typ {
+		case itemEnd:
+			if i := s.next(); i.typ != itemColon {
+				return nil, fmt.Errorf("unexpected (%s) after END, expected colon (:)", i.val)
+			}
+			if i := s.next(); i.typ != itemVTimeZone {
+				return nil, fmt.Errorf("unexpected (%s) after END:, expected VTIMEZONE", i.val)
+			}
+			return tz, nil
+		case itemX:
+			s.backup()
+			propName, val, err := s.xProperty()
+			if err != nil {
+				return nil, err
+			}
+			if tz.Properties == nil {
+				tz.Properties = make(map[string]string)
+			}
+			tz.Properties[propName] = val
+		case itemTZID:
+			val, err := s.stringProperty("TZID")
+			if err != nil {
+				return nil, err
+			}
+			loc, err := time.LoadLocation(val)
+			if err != nil {
+				return nil, fmt.Errorf("cannot load TZID: %s", err)
+			}
+			tz.TZID = loc
+		case itemURL:
+			val, err := s.stringProperty("TZURL")
+			if err != nil {
+				return nil, err
+			}
+			tzURL, err := url.Parse(val)
+			if err != nil {
+				return nil, err
+			}
+			tz.TZURL = tzURL
+		case itemTZOffsetFrom:
+			val, err := s.stringProperty("TZOFFSETFROM")
+			if err != nil {
+				return nil, err
+			}
+			var h, m int
+			fmt.Sscanf(val[1:], "%02d%02d", &h, &m)
+		default:
+			return nil, fmt.Errorf("unexpected item in VTIMEZONE: (%s)", i.val)
+		}
+	}
 }

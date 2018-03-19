@@ -8,11 +8,27 @@ import (
 
 //Calendar represents the iCalendar data
 type Calendar struct {
-	Version  string
-	Method   string
-	ProdID   string
-	Calscale string
-	Events   []*Event
+	Properties map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
+	Version    string
+	Method     string
+	ProdID     string
+	Calscale   string
+	TimeZone   *TimeZone
+	Events     []*Event
+}
+
+//TimeZone provide a grouping of component properties that defines a time zone.
+type TimeZone struct {
+	Properties map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
+	TZID       *time.Location
+	TZURL      *url.URL
+	Daylight   *Daylight
+}
+
+//Daylight ...
+type Daylight struct {
+	TZOffsetFrom int
+	TZOffsetTo   int
 }
 
 //Event represents the iCalendar event
@@ -30,7 +46,8 @@ type Event struct {
 	Categories  []string
 	Location    string
 	Geo         GeoPoint
-	URL         url.URL
+	URL         *url.URL
+	Alarm       *Alarm
 }
 
 //Rrule ...
@@ -50,6 +67,28 @@ type Rrule struct {
 	BySetPos   []int
 	Wkst       *time.Weekday
 }
+
+//Alarm ...
+type Alarm struct {
+	Trigger     string
+	Repeat      int
+	Duration    time.Duration
+	Action      Action
+	Description string
+	Attendee    string
+	Summary     string
+	Attach      string
+}
+
+//Action types
+type Action int
+
+//Action types
+const (
+	ActionAudio Action = iota
+	ActionDisplay
+	ActionEmail
+)
 
 func parseIcsDay(val string) (time.Weekday, error) {
 	switch val {
