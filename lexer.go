@@ -16,52 +16,11 @@ const (
 	itemEOF
 
 	//basic items
-	itemColon
-	itemSemiColon
 	itemBegin
 	itemEnd
-
-	//VCALENDAR items
-	itemVCalendar
-	itemVersion
-	itemProdID
-	itemCalscale
-	itemMethod
-	itemVEvent
-	itemVAlarm
-	itemVTimeZone
-	itemX
-
-	//VEVENT items
-	itemSummary
-	itemUID
-	itemSequence
-	itemStatus
-	itemTransp
-	itemRrule
-	itemDTStart
-	itemDTEnd
-	itemDTStamp
-	itemCategories
-	itemLocation
-	itemGeo
-	itemDescription
-	itemURL
-	itemTrigger
-
-	//VTIMEZONE items
-	itemTZID
-	itemTZOffsetFrom
-	itemTZOffsetTo
-
-	//property value items
-	itemRecur
-	itemDate
-	itemTime
-	itemTimeZone
-	itemLatLong
-	itemString
-	itemInteger
+	itemProperty
+	itemParam
+	itemValue
 )
 
 type item struct {
@@ -158,16 +117,18 @@ func (l *lexer) peek() rune {
 
 //readLetters reads all runes that are letters
 func (l *lexer) readLetters() string {
+	var buf strings.Builder
 	for {
-		if ch := l.read(); ch == eof {
+		ch := l.read()
+		if ch == eof {
 			break
 		} else if !unicode.IsLetter(ch) {
 			l.unread()
 			break
 		}
+		buf.WriteRune(ch)
 	}
-	ret := l.buf.String()
-	return ret
+	return buf.String()
 }
 
 //readDigits reads all runes that are letters
@@ -184,34 +145,46 @@ func (l *lexer) readDigits() string {
 	return ret
 }
 
-//readStringProperty reads property name, following colon and the string value
-func (l *lexer) readStringProperty(name string, item itemType) {
-	l.emit(item)
-	if r := l.read(); r != ':' {
-		l.errorf("unexpected character after %s (%c) expected colon (:)", name, r)
+func (l *lexer) readProperty() {
+	l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZ-")
+	l.emit(itemProperty)
+	l.acceptWhitespace()
+	r := l.read()
+	switch r {
+	case ';':
+		l.buf.Reset()
+		l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZ=-;")
+		l.emit(itemParam)
+		if l.read() != ':' {
+			l.errorf("unexpected character after params (%c) expected colon (:)", r)
+		}
+		l.readValue()
+	case ':':
+		l.readValue()
+	default:
+		l.errorf("unexpected character after property (%c) expected colon (:)", r)
 		return
 	}
-	l.emit(itemColon)
-	l.acceptToLineBreak()
-	l.emit(itemString)
-	l.accept("\n\r")
+
+}
+func (l *lexer) readValue() {
 	l.buf.Reset()
+	l.acceptToLineBreak()
+	l.emit(itemValue)
+	l.acceptWhitespace()
 }
 
-func (l *lexer) readXProperty() stateFn {
-	r := l.read()
-	if r != '-' {
-		return l.errorf("unexpected character after X (%c) expected (-)", r)
+func (l *lexer) readXProperty() {
+	l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZ-")
+	l.emit(itemProperty)
+	l.ignoreWhitespace()
+	if r := l.read(); r != ':' {
+		l.errorf("unexpected character after X (%c) expected colon (:)", r)
+		return
 	}
-	l.acceptRun("ABCDEFGHIJKLMNOPQRSTUVWXYZ-")
-	l.emit(itemX)
-	if r = l.read(); r != ':' {
-		return l.errorf("unexpected character after X (%c) expected colon (:)", r)
-	}
-	l.emit(itemColon)
+	l.buf.Reset()
 	l.acceptToLineBreak()
-	l.emit(itemString)
-	return nil
+	l.emit(itemValue)
 }
 
 //acceptToLineBreak reads entire string to line break
@@ -220,34 +193,46 @@ func (l *lexer) acceptToLineBreak() {
 		if ch := l.read(); ch == eof {
 			break
 		} else if ch == '\r' || ch == '\n' {
-			if ch = l.read(); ch != '\n' && ch != '\r' {
-				l.unread()
+			if ch = l.read(); ch == ' ' {
+				continue
 			}
+			l.unread()
 			l.unread()
 			break
 		}
 	}
 }
 
-//accept consumes the next rune if it's from the valid set.
-func (l *lexer) accept(valid string) bool {
-	if strings.ContainsRune(valid, l.read()) {
-		return true
-	}
-	l.unread()
-	return false
-}
-
 //acceptRun consumes a run of runes from the valid set.
-func (l *lexer) acceptRun(valid string) {
+func (l *lexer) accept(valid string) {
 	for strings.ContainsRune(valid, l.read()) {
 	}
 	l.unread()
 }
 
 func (l *lexer) acceptWhitespace() {
-	l.acceptRun(" \t\n\r")
+	l.accept(" \t\n\r")
 	l.buf.Reset()
+}
+
+func (l *lexer) ignoreWhitespace() {
+	for {
+		ch, _, err := l.input.ReadRune()
+		if ch == '\n' {
+			l.line++
+			l.prevpos = l.pos
+			l.pos = 0
+		} else {
+			if !strings.ContainsRune(" \t\n\r", ch) {
+				l.input.UnreadRune()
+				return
+			}
+			l.pos++
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 //errorf returns an error token and terminates the scan
@@ -275,15 +260,13 @@ func lexStart(l *lexer) stateFn {
 	if word := l.readLetters(); word != "BEGIN" {
 		return l.errorf("unexpected word at start (%s) expected BEGIN", word)
 	}
-	l.emit(itemBegin)
 	if r := l.read(); r != ':' {
 		return l.errorf("unexpected character after BEGIN (%c) expected colon (:)", r)
 	}
-	l.emit(itemColon)
 	if word := l.readLetters(); word != "VCALENDAR" {
 		return l.errorf("unexpected word after BEGIN: (%s) expected VCALENDAR", word)
 	}
-	l.emit(itemVCalendar)
+	l.emit(itemBegin)
 	if r := l.read(); r != '\r' && r != '\n' {
 		return l.errorf("unexpected character after BEGIN:VCALENDAR (%c) expected CR or LF (\\r or \\n)", r)
 	}
@@ -294,184 +277,86 @@ func lexStart(l *lexer) stateFn {
 func lexVCalendar(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
+	l.ignoreWhitespace()
+	if r := l.read(); r != ':' && r != '-' {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	}
+	l.unread()
 	switch word {
-	case "VERSION":
-		l.readStringProperty("VERSION", itemVersion)
-		return lexVCalendar
-	case "PRODID":
-		l.readStringProperty("PRODID", itemProdID)
-		return lexVCalendar
-	case "CALSCALE":
-		l.readStringProperty("CALSCALE", itemCalscale)
-		return lexVCalendar
-	case "METHOD":
-		l.readStringProperty("METHOD", itemMethod)
-		return lexVCalendar
 	case "X":
-		if err := l.readXProperty(); err != nil {
-			return err
-		}
+		l.readXProperty()
 		return lexVCalendar
 	case "BEGIN":
-		l.emit(itemBegin)
 		if r := l.read(); r != ':' {
 			return l.errorf("unexpected character after METHOD (%c) expected colon (:)", r)
 		}
-		l.emit(itemColon)
 		word := l.readLetters()
+		l.emit(itemBegin)
 		switch word {
 		case "VEVENT":
-			l.emit(itemVEvent)
-			if r := l.read(); r != '\r' && r != '\n' {
-				return l.errorf("unexpected character after BEGIN:VEVENT (%c) expected CR or LF (\\r or \\n)", r)
-			}
-			l.buf.Reset()
+			l.acceptWhitespace()
 			return lexVEvent
 		case "VTIMEZONE":
-			l.emit(itemVTimeZone)
-			if r := l.read(); r != '\r' && r != '\n' {
-				return l.errorf("unexpected character after BEGIN:VEVENT (%c) expected CR or LF (\\r or \\n)", r)
-			}
-			l.buf.Reset()
+			l.acceptWhitespace()
 			return lexVTimeZone
 		default:
 			return l.errorf("unexpected word after BEGIN: (%s) in VCALENDAR, expected VEVENT or VTIMEZONE", word)
 		}
 	case "END":
-		l.emit(itemEnd)
 		if r := l.read(); r != ':' {
 			return l.errorf("unexpected character after END (%c), expected colon (:)", r)
 		}
-		l.emit(itemColon)
 		if word := l.readLetters(); word != "VCALENDAR" {
 			return l.errorf("unexpected word after END: (%s), expected VCALENDAR", word)
 		}
-		l.emit(itemVCalendar)
+		l.emit(itemEnd)
 		return nil
+	default:
+		l.readProperty()
+		return lexVCalendar
 	}
-	return l.errorf("unexpected word in VCALENDAR (%s)", word)
 }
 
 func lexVEvent(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
+	l.ignoreWhitespace()
+	r := l.read()
+	if !strings.ContainsRune(":;-", r) {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:;-)", r, word)
+	}
+	l.unread()
 	switch word {
-	case "SUMMARY":
-		l.readStringProperty("SUMMARY", itemSummary)
-		return lexVEvent
-	case "UID":
-		l.readStringProperty("UID", itemUID)
-		return lexVEvent
-	case "STATUS":
-		l.readStringProperty("STATUS", itemStatus)
-		return lexVEvent
-	case "TRANSP":
-		l.readStringProperty("TRANSP", itemTransp)
-		return lexVEvent
-	case "CATEGORIES":
-		l.readStringProperty("CATEGORIES", itemCategories)
-		return lexVEvent
-	case "LOCATION":
-		l.readStringProperty("LOCATION", itemLocation)
-		return lexVEvent
-	case "DESCRIPTION":
-		l.readStringProperty("DESCRIPTION", itemDescription)
-		return lexVEvent
-	case "URL":
-		l.readStringProperty("URL", itemURL)
-		return lexVEvent
-	case "SEQUENCE":
-		l.emit(itemSequence)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after SEQUENCE (%c) expected colon (:)", r)
-		}
-		l.emit(itemColon)
-		if digits := l.readDigits(); digits == "" {
-			return l.errorf("unexpected error after SEQUENCE, expected an interger")
-		}
-		l.emit(itemInteger)
-		return lexVEvent
-	case "RRULE":
-		l.emit(itemRrule)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after RRULE (%c) expected colon (:)", r)
-		}
-		l.emit(itemColon)
-		l.acceptToLineBreak()
-		l.emit(itemRecur)
-		return lexVEvent
-	case "GEO":
-		l.emit(itemGeo)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after GEO (%c) expected colon (:)", r)
-		}
-		l.emit(itemColon)
-		l.acceptToLineBreak()
-		l.emit(itemLatLong)
-		return lexVEvent
-	case "DTSTART":
-		l.emit(itemDTStart)
-		r := l.read()
-		switch r {
-		case ':':
-			l.emit(itemColon)
-			return lexDateTime
-		case ';':
-			l.emit(itemSemiColon)
-			return lexTimeZone
-		default:
-			return l.errorf("unexpected character after DTSTART (%c) expected colon (:) or semicolon (;)", r)
-		}
-	case "DTEND":
-		l.emit(itemDTEnd)
-		r := l.read()
-		switch r {
-		case ':':
-			l.emit(itemColon)
-			return lexDateTime
-		case ';':
-			l.emit(itemSemiColon)
-			return lexTimeZone
-		default:
-			return l.errorf("unexpected character after DTSTART (%c) expected colon (:) or semicolon (;)", r)
-		}
-	case "DTSTAMP":
-		l.emit(itemDTStamp)
-		r := l.read()
-		switch r {
-		case ':':
-			l.emit(itemColon)
-			return lexDateTime
-		case ';':
-			l.emit(itemSemiColon)
-			return lexTimeZone
-		default:
-			return l.errorf("unexpected character after DTSTART (%c) expected colon (:) or semicolon (;)", r)
-		}
 	case "BEGIN":
+		l.read()
+		word := l.readLetters()
 		l.emit(itemBegin)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after BEGIN (%c), expected colon (:)", r)
+		switch word {
+		case "VALARM":
+			l.acceptWhitespace()
+			return lexVAlarm
+		default:
+			return l.errorf("unexpected word after BEGIN: (%s) expected TODO", word)
 		}
-		l.emit(itemColon)
-		if word := l.readLetters(); word != "VALARM" {
-			return l.errorf("unexpected word after BEGIN: (%s), expected VALARM", word)
-		}
-		l.emit(itemVAlarm)
-		return lexVAlarm
 	case "END":
-		l.emit(itemEnd)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after END (%c), expected colon (:)", r)
-		}
-		l.emit(itemColon)
+		l.read()
 		if word := l.readLetters(); word != "VEVENT" {
 			return l.errorf("unexpected word after END: (%s), expected VEVENT", word)
 		}
-		l.emit(itemVEvent)
+		l.emit(itemEnd)
 		return lexVCalendar
+	case "DTSTART", "DTEND", "DTSTAMP":
+		l.emit(itemProperty)
+		l.read()
+		l.buf.Reset()
+		if r == ';' {
+			return lexTimeZone
+		}
+		return lexDateTime
+	default:
+		l.readProperty()
+		return lexVEvent
 	}
-	return l.errorf("unexpected word in VEVENT (%s)", word)
 }
 
 func lexDateTime(l *lexer) stateFn {
@@ -488,10 +373,10 @@ func lexDateTime(l *lexer) stateFn {
 		if ch == '\r' || ch == '\n' {
 			l.unread()
 		}
-		l.emit(itemTime)
+		l.emit(itemValue)
 	case '\r', '\n':
 		l.unread()
-		l.emit(itemDate)
+		l.emit(itemValue)
 	default:
 		return l.errorf("unsupported DATE-TIME value (%s)", l.buf.String())
 	}
@@ -505,87 +390,85 @@ func lexTimeZone(l *lexer) stateFn {
 			return l.errorf("error in parsing date-time with time zone (expected TZID=)")
 		}
 	}
-	l.buf.Reset()
 	for l.read() != ':' {
 	}
-	l.unread()
-	l.emit(itemTimeZone)
-	l.read()
-	l.emit(itemColon)
 	return lexDateTime
 }
 
 func lexVAlarm(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
+	l.ignoreWhitespace()
 	switch word {
 	case "END":
-		l.emit(itemEnd)
 		if r := l.read(); r != ':' {
 			return l.errorf("unexpected character after END (%c), expected colon (:)", r)
 		}
-		l.emit(itemColon)
 		if word := l.readLetters(); word != "VALARM" {
 			return l.errorf("unexpected word after END: (%s), expected VALARM", word)
 		}
-		l.emit(itemVAlarm)
+		l.emit(itemEnd)
 		return lexVEvent
-	case "TRIGGER":
-		l.emit(itemTrigger)
+	default:
+		l.readProperty()
+		return lexVAlarm
 	}
-	return l.errorf("unexpected word in VALARM (%s)", word)
 }
 
 func lexVTimeZone(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
+	l.ignoreWhitespace()
+	if r := l.read(); r != ':' && r != '-' {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	}
+	l.unread()
 	switch word {
 	case "END":
-		l.emit(itemEnd)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after END (%c), expected colon (:)", r)
-		}
-		l.emit(itemColon)
+		l.read()
 		if word := l.readLetters(); word != "VTIMEZONE" {
 			return l.errorf("unexpected word after END: (%s), expected VTIMEZONE", word)
 		}
-		l.emit(itemVAlarm)
-		return lexVEvent
+		l.emit(itemEnd)
+		return lexVCalendar
 	case "X":
-		if err := l.readXProperty(); err != nil {
-			return err
-		}
+		l.readXProperty()
 		return lexVTimeZone
-	case "TZID":
-		l.emit(itemTZID)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after TZID (%c), expected colon (:)", r)
+	case "BEGIN":
+		l.read()
+		switch l.readLetters() {
+		case "DAYLIGHT", "STANDARD":
+			l.emit(itemBegin)
+			return lexStandard
+		default:
+			return l.errorf("unexpected %s in VTIMEZONE, expected BEGIN:DAYLIGHT or BEGIN:STANDARD", word)
 		}
-		l.emit(itemColon)
-		l.acceptToLineBreak()
-		l.emit(itemString)
-		return lexVTimeZone
-	case "TZURL":
-		l.readStringProperty("TZURL", itemURL)
-		return lexVTimeZone
-	case "TZOFFSETFROM":
-		l.emit(itemTZOffsetFrom)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after TZOFFSETFROM (%c), expected colon (:)", r)
-		}
-		l.emit(itemColon)
-		l.acceptToLineBreak()
-		l.emit(itemString)
-		return lexVTimeZone
-	case "TZOFFSETTO":
-		l.emit(itemTZOffsetTo)
-		if r := l.read(); r != ':' {
-			return l.errorf("unexpected character after TZOFFSETTO (%c), expected colon (:)", r)
-		}
-		l.emit(itemColon)
-		l.acceptToLineBreak()
-		l.emit(itemString)
+	default:
+		l.readProperty()
 		return lexVTimeZone
 	}
-	return l.errorf("unexpected word in VTIMEZONE (%s)", word)
+}
+
+func lexStandard(l *lexer) stateFn {
+	l.acceptWhitespace()
+	word := l.readLetters()
+	l.ignoreWhitespace()
+	if r := l.read(); r != ':' && r != '-' {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	}
+	l.unread()
+	switch word {
+	case "END":
+		l.read()
+		switch l.readLetters() {
+		case "DAYLIGHT", "STANDARD":
+			l.emit(itemEnd)
+			return lexVTimeZone
+		default:
+			return l.errorf("unexpected word after END: (%s), expected DAYLIGHT", word)
+		}
+	default:
+		l.readProperty()
+		return lexStandard
+	}
 }

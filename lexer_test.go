@@ -29,12 +29,13 @@ func getTests() chan *os.File {
 
 func TestLexer(t *testing.T) {
 	for f := range getTests() {
-		defer f.Close()
+		t.Log("Parsing:", f.Name())
 		l := lex(f)
 		for item := range l.items {
 			if item.typ == itemError {
 				t.Fatal(item)
 			}
 		}
+		f.Close()
 	}
 }

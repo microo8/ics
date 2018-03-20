@@ -20,34 +20,60 @@ type Calendar struct {
 //TimeZone provide a grouping of component properties that defines a time zone.
 type TimeZone struct {
 	Properties map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
-	TZID       *time.Location
+	TZID       string
 	TZURL      *url.URL
-	Daylight   *Daylight
+	Daylight   *Standard
+	Standard   *Standard
 }
 
-//Daylight ...
-type Daylight struct {
+//Standard ...
+type Standard struct {
 	TZOffsetFrom int
 	TZOffsetTo   int
+	TZName       string
+	DTStart      time.Time
+	Rrule        *Rrule
+	Rdate        string //TODO
 }
+
+//Class the classification enum
+type Class int
+
+//classification enum
+const (
+	ClassPublic Class = iota
+	ClassPrivate
+	ClassConfidential
+)
 
 //Event represents the iCalendar event
 type Event struct {
-	Summary     string
-	Description string
-	UID         string
-	Sequence    int
-	Status      string
-	Transp      string
-	Rrule       *Rrule
-	DTStart     time.Time
-	DTEnd       time.Time
-	DTStamp     time.Time
-	Categories  []string
-	Location    string
-	Geo         GeoPoint
-	URL         *url.URL
-	Alarm       *Alarm
+	Properties   map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
+	Class        Class
+	Created      time.Time
+	LastModified time.Time
+	Summary      string
+	Description  string
+	UID          string
+	Sequence     int
+	Status       string
+	Transp       string
+	Rrule        *Rrule
+	DTStart      time.Time
+	DTEnd        time.Time
+	DTStamp      time.Time
+	Categories   []string
+	Location     string
+	Geo          GeoPoint
+	URL          *url.URL
+	Alarm        *Alarm
+	Organizer    *Organizer
+}
+
+//Organizer defines the organizer for a calendar component
+type Organizer struct {
+	Parameters map[string]string
+	Value      string
 }
 
 //Rrule ...
@@ -59,13 +85,19 @@ type Rrule struct {
 	BySecond   []int
 	ByMinute   []int
 	ByHour     []int
-	ByDay      []time.Weekday
+	ByDay      []WDay
 	ByMonthday []int
 	ByYearday  []int
 	ByWeekNo   []int
 	ByMonth    []time.Month
 	BySetPos   []int
 	Wkst       *time.Weekday
+}
+
+//WDay ...
+type WDay struct {
+	Num     int
+	Weekday time.Weekday
 }
 
 //Alarm ...
@@ -89,27 +121,6 @@ const (
 	ActionDisplay
 	ActionEmail
 )
-
-func parseIcsDay(val string) (time.Weekday, error) {
-	switch val {
-	case "MO":
-		return time.Monday, nil
-	case "TU":
-		return time.Tuesday, nil
-	case "WE":
-		return time.Wednesday, nil
-	case "TH":
-		return time.Thursday, nil
-	case "FR":
-		return time.Friday, nil
-	case "SA":
-		return time.Saturday, nil
-	case "SU":
-		return time.Sunday, nil
-	default:
-		return 0, fmt.Errorf("not valid Weekday value (%s)", val)
-	}
-}
 
 //Frequency rule part identifies the type of recurrence rule
 type Frequency int
