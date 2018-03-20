@@ -59,6 +59,7 @@ type Event struct {
 	Status       string
 	Transp       string
 	Rrule        *Rrule
+	ExDate       []time.Time
 	DTStart      time.Time
 	DTEnd        time.Time
 	DTStamp      time.Time
@@ -67,11 +68,13 @@ type Event struct {
 	Geo          GeoPoint
 	URL          *url.URL
 	Alarm        *Alarm
-	Organizer    *Organizer
+	Organizer    *Attendee
+	Attendee     *Attendee
+	Participant  *Attendee
 }
 
-//Organizer defines the organizer for a calendar component
-type Organizer struct {
+//Attendee ...
+type Attendee struct {
 	Parameters map[string]string
 	Value      string
 }

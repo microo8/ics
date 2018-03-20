@@ -124,9 +124,13 @@ func parseEvent(s *scanner) (*Event, error) {
 			e.Alarm = alarm
 		case itemProperty:
 			iVal := s.next()
-			var iPar item
+			var par map[string]string
 			if iVal.typ == itemParam {
-				iPar = iVal
+				var err error
+				par, err = parseParam(iVal.val)
+				if err != nil {
+					return nil, err
+				}
 				iVal = s.next()
 			}
 			if iVal.typ != itemValue {
@@ -199,49 +203,52 @@ func parseEvent(s *scanner) (*Event, error) {
 					return nil, fmt.Errorf("not valid geo-point value (%s)", val)
 				}
 				e.Geo.Longitude = v
+			case "EXDATE":
+				exDates := strings.Split(val, ",")
+				e.ExDate = make([]time.Time, len(exDates))
+				for i, val := range exDates {
+					t, err := parseDateTime(nil, val)
+					if err != nil {
+						return nil, err
+					}
+					e.ExDate[i] = t
+				}
 			case "CREATED":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}
 				e.Created = t
 			case "LAST-MODIFIED":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}
 				e.LastModified = t
 			case "DTSTART":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}
 				e.DTStart = t
 			case "DTEND":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}
 				e.DTEnd = t
 			case "DTSTAMP":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}
 				e.DTStamp = t
 			case "ORGANIZER":
-				p, err := parseParam(iPar.val)
-				if err != nil {
-					return nil, err
-				}
-				e.Organizer = &Organizer{Parameters: p, Value: val}
+				e.Organizer = &Attendee{Parameters: par, Value: val}
 			case "ATTENDEE":
-				p, err := parseParam(iPar.val)
-				if err != nil {
-					return nil, err
-				}
-				fmt.Println("ATTENDEE", val, p)
-
+				e.Attendee = &Attendee{Parameters: par, Value: val}
+			case "PARTICIPANT":
+				e.Participant = &Attendee{Parameters: par, Value: val}
 			default:
 				return nil, fmt.Errorf("unexpected item (%s) in VEVENT", i)
 			}
@@ -252,6 +259,9 @@ func parseEvent(s *scanner) (*Event, error) {
 }
 
 func parseParam(val string) (map[string]string, error) {
+	if val == "" {
+		return nil, nil
+	}
 	ret := make(map[string]string)
 	for _, pair := range strings.Split(val, ";") {
 		keyValue := strings.Split(pair, "=")
@@ -279,7 +289,7 @@ func parseRecur(val string) (*Rrule, error) {
 			}
 			r.Freq = freq
 		case "UNTIL":
-			until, err := parseDateTime(val)
+			until, err := parseDateTime(nil, val)
 			if err != nil {
 				return nil, fmt.Errorf("not valid UNTIL value: %s", err)
 			}
@@ -428,17 +438,13 @@ const (
 	IcsFormatDate = "20060102"
 )
 
-func parseDateTime(val string) (time.Time, error) {
-	if strings.HasPrefix(val, "TZID=") {
-		index := strings.Index(val, ":")
-		if index == -1 {
-			return time.Time{}, fmt.Errorf("not valid time value with time-zone")
-		}
-		loc, err := time.LoadLocation(val[5:index])
+func parseDateTime(par map[string]string, val string) (time.Time, error) {
+	if timeZone, ok := par["TZID"]; ok {
+		loc, err := time.LoadLocation(timeZone)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("cannot load time-zone (%s)", val[5:index])
+			return time.Time{}, fmt.Errorf("cannot load time-zone (%s)", timeZone)
 		}
-		t, err := parseDateTime(val[index+1:])
+		t, err := parseDateTime(nil, val)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -506,10 +512,6 @@ func parseTimeZone(s *scanner) (*TimeZone, error) {
 				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
 			}
 			val := iVal.val
-			if strings.HasPrefix(i.val, "X-") {
-				//TODO
-				continue
-			}
 			switch i.val {
 			case "TZID":
 				tz.TZID = val
@@ -539,6 +541,15 @@ func parseStandard(s *scanner) (*Standard, error) {
 			return d, nil
 		case itemProperty:
 			iVal := s.next()
+			var par map[string]string
+			if iVal.typ == itemParam {
+				var err error
+				par, err = parseParam(iVal.val)
+				if err != nil {
+					return nil, err
+				}
+				iVal = s.next()
+			}
 			if iVal.typ != itemValue {
 				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
 			}
@@ -561,7 +572,7 @@ func parseStandard(s *scanner) (*Standard, error) {
 				}
 				d.TZOffsetTo = val
 			case "DTSTART":
-				t, err := parseDateTime(val)
+				t, err := parseDateTime(par, val)
 				if err != nil {
 					return nil, err
 				}

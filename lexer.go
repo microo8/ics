@@ -153,9 +153,9 @@ func (l *lexer) readProperty() {
 	switch r {
 	case ';':
 		l.buf.Reset()
-		l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZ=-;")
+		l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz=-; ")
 		l.emit(itemParam)
-		if l.read() != ':' {
+		if r := l.read(); r != ':' {
 			l.errorf("unexpected character after params (%c) expected colon (:)", r)
 		}
 		l.readValue()
@@ -172,19 +172,6 @@ func (l *lexer) readValue() {
 	l.acceptToLineBreak()
 	l.emit(itemValue)
 	l.acceptWhitespace()
-}
-
-func (l *lexer) readXProperty() {
-	l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZ-")
-	l.emit(itemProperty)
-	l.ignoreWhitespace()
-	if r := l.read(); r != ':' {
-		l.errorf("unexpected character after X (%c) expected colon (:)", r)
-		return
-	}
-	l.buf.Reset()
-	l.acceptToLineBreak()
-	l.emit(itemValue)
 }
 
 //acceptToLineBreak reads entire string to line break
@@ -284,7 +271,7 @@ func lexVCalendar(l *lexer) stateFn {
 	l.unread()
 	switch word {
 	case "X":
-		l.readXProperty()
+		l.readProperty()
 		return lexVCalendar
 	case "BEGIN":
 		if r := l.read(); r != ':' {
@@ -347,11 +334,6 @@ func lexVEvent(l *lexer) stateFn {
 		return lexVCalendar
 	case "DTSTART", "DTEND", "DTSTAMP":
 		l.emit(itemProperty)
-		l.read()
-		l.buf.Reset()
-		if r == ';' {
-			return lexTimeZone
-		}
 		return lexDateTime
 	default:
 		l.readProperty()
@@ -360,6 +342,15 @@ func lexVEvent(l *lexer) stateFn {
 }
 
 func lexDateTime(l *lexer) stateFn {
+	if l.read() == ';' {
+		l.buf.Reset()
+		for l.read() != ':' {
+		}
+		l.unread()
+		l.emit(itemParam)
+		l.read()
+	}
+	l.buf.Reset()
 	l.readDigits()
 	r := l.read()
 	switch r {
@@ -382,17 +373,6 @@ func lexDateTime(l *lexer) stateFn {
 	}
 	l.acceptWhitespace()
 	return lexVEvent
-}
-
-func lexTimeZone(l *lexer) stateFn {
-	for _, ch := range "TZID=" {
-		if l.read() != ch {
-			return l.errorf("error in parsing date-time with time zone (expected TZID=)")
-		}
-	}
-	for l.read() != ':' {
-	}
-	return lexDateTime
 }
 
 func lexVAlarm(l *lexer) stateFn {
@@ -432,7 +412,7 @@ func lexVTimeZone(l *lexer) stateFn {
 		l.emit(itemEnd)
 		return lexVCalendar
 	case "X":
-		l.readXProperty()
+		l.readProperty()
 		return lexVTimeZone
 	case "BEGIN":
 		l.read()
