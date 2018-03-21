@@ -3,31 +3,45 @@ package ics
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 )
 
+//Properties any property name with a "X-" prefix
+//This class of property provides a framework for defining non-standard properties.
+type Properties map[string]string
+
+func (p Properties) set(name, val string) bool {
+	if !strings.HasPrefix(name, "X-") {
+		return false
+	}
+	p[name[2:]] = val
+	return true
+}
+
 //Calendar represents the iCalendar data
 type Calendar struct {
-	Properties map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
+	Properties Properties
 	Version    string
 	Method     string
 	ProdID     string
 	Calscale   string
-	TimeZone   *TimeZone
+	TimeZone   []*TimeZone
 	Events     []*Event
 }
 
 //TimeZone provide a grouping of component properties that defines a time zone.
 type TimeZone struct {
-	Properties map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
-	TZID       string
-	TZURL      *url.URL
-	Daylight   *Standard
-	Standard   *Standard
+	Properties   Properties
+	LastModified time.Time
+	TZID         string
+	TZURL        *url.URL
+	Daylight     []*TimeZoneMode
+	Standard     []*TimeZoneMode
 }
 
-//Standard ...
-type Standard struct {
+//TimeZoneMode represents the STANDARD time or DAYLIGHT saving time
+type TimeZoneMode struct {
 	TZOffsetFrom int
 	TZOffsetTo   int
 	TZName       string
@@ -48,7 +62,7 @@ const (
 
 //Event represents the iCalendar event
 type Event struct {
-	Properties   map[string]string //Non-Standard Properties, Any property name with a "X-" prefix
+	Properties   Properties
 	Class        Class
 	Created      time.Time
 	LastModified time.Time
@@ -56,6 +70,7 @@ type Event struct {
 	Description  string
 	UID          string
 	Sequence     int
+	Priority     int
 	Status       string
 	Transp       string
 	Rrule        *Rrule
@@ -68,6 +83,7 @@ type Event struct {
 	Geo          GeoPoint
 	URL          *url.URL
 	Alarm        *Alarm
+	Attachment   *Attachment
 	Organizer    *Attendee
 	Attendee     *Attendee
 	Participant  *Attendee
@@ -75,6 +91,12 @@ type Event struct {
 
 //Attendee ...
 type Attendee struct {
+	Parameters map[string]string
+	Value      string
+}
+
+//Attachment file
+type Attachment struct {
 	Parameters map[string]string
 	Value      string
 }

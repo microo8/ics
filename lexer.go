@@ -42,10 +42,6 @@ var (
 	eof = rune(0)
 )
 
-func isWhitespace(ch rune) bool {
-	return ch == ' ' || ch == '\t' || ch == '\n'
-}
-
 //stateFn represents the state of the scanner as a function that returns the next state.
 type stateFn func(*lexer) stateFn
 
@@ -68,6 +64,7 @@ func (l *lexer) run() {
 // emit passes an item back to the client.
 func (l *lexer) emit(t itemType) {
 	l.items <- item{t, l.buf.String()}
+	fmt.Println(item{t, l.buf.String()})
 	l.buf.Reset()
 }
 
@@ -153,7 +150,9 @@ func (l *lexer) readProperty() {
 	switch r {
 	case ';':
 		l.buf.Reset()
-		l.accept("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz=-; ")
+		for l.read() != ':' {
+		}
+		l.unread()
 		l.emit(itemParam)
 		if r := l.read(); r != ':' {
 			l.errorf("unexpected character after params (%c) expected colon (:)", r)
@@ -170,6 +169,11 @@ func (l *lexer) readProperty() {
 func (l *lexer) readValue() {
 	l.buf.Reset()
 	l.acceptToLineBreak()
+	val := l.buf.String()
+	val = strings.Replace(val, "\n", "", -1)
+	val = strings.Replace(val, "\\n", "\n", -1)
+	l.buf.Reset()
+	l.buf.WriteString(val)
 	l.emit(itemValue)
 	l.acceptWhitespace()
 }
@@ -180,7 +184,13 @@ func (l *lexer) acceptToLineBreak() {
 		if ch := l.read(); ch == eof {
 			break
 		} else if ch == '\r' || ch == '\n' {
-			if ch = l.read(); ch == ' ' {
+			if ch == '\r' {
+				r, _, _ := l.input.ReadRune()
+				if r != '\n' {
+					l.input.UnreadRune()
+				}
+			}
+			if ch = l.read(); unicode.IsSpace(ch) {
 				continue
 			}
 			l.unread()
@@ -210,7 +220,7 @@ func (l *lexer) ignoreWhitespace() {
 			l.prevpos = l.pos
 			l.pos = 0
 		} else {
-			if !strings.ContainsRune(" \t\n\r", ch) {
+			if !unicode.IsSpace(ch) {
 				l.input.UnreadRune()
 				return
 			}
@@ -228,7 +238,7 @@ func (l *lexer) ignoreWhitespace() {
 func (l *lexer) errorf(format string, args ...interface{}) stateFn {
 	l.items <- item{
 		itemError,
-		fmt.Sprintf("%d:%d"+format, append([]interface{}{l.line, l.pos}, args...)...),
+		fmt.Sprintf("%d:%d:"+format, append([]interface{}{l.line, l.pos}, args...)...),
 	}
 	return nil
 }
@@ -265,8 +275,9 @@ func lexVCalendar(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
 	l.ignoreWhitespace()
-	if r := l.read(); r != ':' && r != '-' {
-		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	r := l.read()
+	if !strings.ContainsRune(":;-", r) {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:;-)", r, word)
 	}
 	l.unread()
 	switch word {
@@ -323,7 +334,7 @@ func lexVEvent(l *lexer) stateFn {
 			l.acceptWhitespace()
 			return lexVAlarm
 		default:
-			return l.errorf("unexpected word after BEGIN: (%s) expected TODO", word)
+			return l.errorf("unexpected word after BEGIN: (%s) expected VALARM", word)
 		}
 	case "END":
 		l.read()
@@ -399,8 +410,9 @@ func lexVTimeZone(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
 	l.ignoreWhitespace()
-	if r := l.read(); r != ':' && r != '-' {
-		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	r := l.read()
+	if !strings.ContainsRune(":;-", r) {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:;-)", r, word)
 	}
 	l.unread()
 	switch word {
@@ -433,8 +445,9 @@ func lexStandard(l *lexer) stateFn {
 	l.acceptWhitespace()
 	word := l.readLetters()
 	l.ignoreWhitespace()
-	if r := l.read(); r != ':' && r != '-' {
-		return l.errorf("unexpected character (%c) after property name (%s) expected (:) or (-)", r, word)
+	r := l.read()
+	if !strings.ContainsRune(":;-", r) {
+		return l.errorf("unexpected character (%c) after property name (%s) expected (:;-)", r, word)
 	}
 	l.unread()
 	switch word {

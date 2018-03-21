@@ -1,17 +1,15 @@
 package ics
 
 import (
-	"fmt"
 	"testing"
 )
 
 func TestParser(t *testing.T) {
 	for f := range getTests() {
-		defer f.Close()
-		cal, err := Parse(f)
+		_, err := Parse(f)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatal(f.Name(), err)
 		}
-		fmt.Printf("%#v\n", cal)
+		f.Close()
 	}
 }

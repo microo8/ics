@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 //Parse parses the ics input and returns a Calendar struct
@@ -28,12 +29,10 @@ type scanner struct {
 func (s *scanner) next() item {
 	if s.prevItem == nil {
 		s.curItem = <-s.l.items
-		fmt.Println(s.curItem)
 		return s.curItem
 	}
 	i := *s.prevItem
 	s.prevItem = nil
-	fmt.Println(i)
 	return i
 }
 
@@ -41,11 +40,28 @@ func (s *scanner) backup() {
 	s.prevItem = &s.curItem
 }
 
+func parseProperty(s *scanner) (string, map[string]string, error) {
+	iVal := s.next()
+	var par map[string]string
+	if iVal.typ == itemParam {
+		var err error
+		par, err = parseParam(iVal.val)
+		if err != nil {
+			return "", nil, err
+		}
+		iVal = s.next()
+	}
+	if iVal.typ != itemValue {
+		return "", nil, fmt.Errorf("unexpected item (%s), expected value", iVal)
+	}
+	return iVal.val, par, nil
+}
+
 func parseCalendar(s *scanner) (*Calendar, error) {
 	if i := s.next(); i.typ != itemBegin || i.val != "BEGIN:VCALENDAR" {
 		return nil, fmt.Errorf("iCalendar must start with BEGIN:VCALENDAR, not (%s)", i.val)
 	}
-	cal := &Calendar{}
+	cal := &Calendar{Properties: make(Properties)}
 	for i := s.next(); i.typ != itemEOF; i = s.next() {
 		switch i.typ {
 		case itemError:
@@ -68,31 +84,27 @@ func parseCalendar(s *scanner) (*Calendar, error) {
 				if err != nil {
 					return nil, fmt.Errorf("error parsing VTIMEZONE: %s", err)
 				}
-				cal.TimeZone = tz
+				cal.TimeZone = append(cal.TimeZone, tz)
 			default:
 				return nil, fmt.Errorf("unexpected (%s) after BEGIN:, expected VEVENT or VTIMEZONE", i.val)
 			}
 		case itemProperty:
-			iVal := s.next()
-			if iVal.typ != itemValue {
-				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
+			val, _, err := parseProperty(s)
+			if err != nil {
+				return nil, err
 			}
-			if len(i.val) > 2 && i.val[:2] == "X-" {
-				if cal.Properties == nil {
-					cal.Properties = make(map[string]string)
-				}
-				cal.Properties[i.val[2:]] = iVal.val
+			if cal.Properties.set(i.val, val) {
 				continue
 			}
 			switch i.val {
 			case "VERSION":
-				cal.Version = iVal.val
+				cal.Version = val
 			case "PRODID":
-				cal.ProdID = iVal.val
+				cal.ProdID = val
 			case "CALSCALE":
-				cal.Calscale = iVal.val
+				cal.Calscale = val
 			case "METHOD":
-				cal.Method = iVal.val
+				cal.Method = val
 			}
 		default:
 			return nil, fmt.Errorf("unexpected item (%s) in VCALENDAR", i)
@@ -102,7 +114,7 @@ func parseCalendar(s *scanner) (*Calendar, error) {
 }
 
 func parseEvent(s *scanner) (*Event, error) {
-	e := &Event{}
+	e := &Event{Properties: make(Properties)}
 	for i := s.next(); ; i = s.next() {
 		switch i.typ {
 		case itemError:
@@ -111,7 +123,6 @@ func parseEvent(s *scanner) (*Event, error) {
 			if i.val != "END:VEVENT" {
 				return nil, fmt.Errorf("unexpected (%s) expected END:VEVENT", i.val)
 			}
-			fmt.Println("Event", e)
 			return e, nil
 		case itemBegin:
 			if i.val != "BEGIN:VALARM" {
@@ -123,25 +134,11 @@ func parseEvent(s *scanner) (*Event, error) {
 			}
 			e.Alarm = alarm
 		case itemProperty:
-			iVal := s.next()
-			var par map[string]string
-			if iVal.typ == itemParam {
-				var err error
-				par, err = parseParam(iVal.val)
-				if err != nil {
-					return nil, err
-				}
-				iVal = s.next()
+			val, par, err := parseProperty(s)
+			if err != nil {
+				return nil, err
 			}
-			if iVal.typ != itemValue {
-				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
-			}
-			val := iVal.val
-			if len(i.val) > 2 && i.val[:2] == "X-" {
-				if e.Properties == nil {
-					e.Properties = make(map[string]string)
-				}
-				e.Properties[i.val[2:]] = val
+			if e.Properties.set(i.val, val) {
 				continue
 			}
 			switch i.val {
@@ -182,6 +179,12 @@ func parseEvent(s *scanner) (*Event, error) {
 					return nil, fmt.Errorf("error parsing SEQUENCE value: %s", err)
 				}
 				e.Sequence = val
+			case "PRIORITY":
+				val, err := strconv.Atoi(val)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing SEQUENCE value: %s", err)
+				}
+				e.Priority = val
 			case "RRULE":
 				val, err := parseRecur(val)
 				if err != nil {
@@ -249,6 +252,8 @@ func parseEvent(s *scanner) (*Event, error) {
 				e.Attendee = &Attendee{Parameters: par, Value: val}
 			case "PARTICIPANT":
 				e.Participant = &Attendee{Parameters: par, Value: val}
+			case "ATTACH":
+				e.Attachment = &Attachment{Parameters: par, Value: val}
 			default:
 				return nil, fmt.Errorf("unexpected item (%s) in VEVENT", i)
 			}
@@ -264,11 +269,204 @@ func parseParam(val string) (map[string]string, error) {
 	}
 	ret := make(map[string]string)
 	for _, pair := range strings.Split(val, ";") {
-		keyValue := strings.Split(pair, "=")
-		if len(keyValue) != 2 {
+		index := strings.Index(pair, "=")
+		if index == -1 {
 			return nil, fmt.Errorf("not valid params: %s", pair)
 		}
-		ret[keyValue[0]] = keyValue[1]
+		key := pair[:index]
+		value := pair[index+1:]
+		ret[key] = value
+	}
+	return ret, nil
+}
+
+const (
+	//IcsFormat ics date time format
+	IcsFormat = "20060102T150405"
+	//IcsFormatUTC ics UTC date time format
+	IcsFormatUTC = "20060102T150405Z"
+	//IcsFormatDate ics date format
+	IcsFormatDate = "20060102"
+)
+
+func parseDateTime(par map[string]string, val string) (time.Time, error) {
+	if timeZone, ok := par["TZID"]; ok {
+		loc, err := time.LoadLocation(timeZone)
+		if err != nil {
+			//TODO return time.Time{}, fmt.Errorf("cannot load time-zone (%s)", timeZone)
+			return parseDateTime(nil, val)
+		}
+		t, err := parseDateTime(nil, val)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return t.In(loc), nil
+	}
+	if value, ok := par["VALUE"]; ok {
+		switch value {
+		case "DATE":
+			return time.Parse(IcsFormatDate, val)
+		case "DATE-TIME":
+			return time.Parse(IcsFormat, val)
+		default:
+			return parseDateTime(nil, val)
+		}
+	}
+	t, err := time.Parse(IcsFormatUTC, val)
+	if err == nil {
+		return t, nil
+	}
+	t, err = time.Parse(IcsFormat, val)
+	if err == nil {
+		return t, nil
+	}
+	return time.Parse(IcsFormatDate, val)
+}
+
+func parseAlarm(s *scanner) (*Alarm, error) {
+	a := &Alarm{}
+	for i := s.next(); ; i = s.next() {
+		switch i.typ {
+		case itemEnd:
+			if i.val != "END:VALARM" {
+				return nil, fmt.Errorf("unexpected (%s) expected END:VALARM", i.val)
+			}
+			return a, nil
+		case itemProperty:
+			iVal := s.next()
+			if iVal.typ != itemValue {
+				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
+			}
+			val := iVal.val
+			switch i.val {
+			case "TRIGGER":
+				a.Trigger = val
+			}
+		default:
+			return nil, fmt.Errorf("unexpected item in VALARM: (%s)", i.val)
+		}
+	}
+}
+
+func parseTimeZone(s *scanner) (*TimeZone, error) {
+	tz := &TimeZone{Properties: make(Properties)}
+	for i := s.next(); ; i = s.next() {
+		switch i.typ {
+		case itemEnd:
+			if i.val != "END:VTIMEZONE" {
+				return nil, fmt.Errorf("unexpected (%s) END:VTIMEZONE", i.val)
+			}
+			return tz, nil
+		case itemBegin:
+			switch i.val {
+			case "BEGIN:DAYLIGHT":
+				tzm, err := parseTimeZoneMode(s)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing DAYLIGHT: %s", err)
+				}
+				tz.Daylight = append(tz.Daylight, tzm)
+			case "BEGIN:STANDARD":
+				tzm, err := parseTimeZoneMode(s)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing STANDARD: %s", err)
+				}
+				tz.Standard = append(tz.Standard, tzm)
+			default:
+				return nil, fmt.Errorf("unexpected (%s) after BEGIN:, expected DAYLIGHT or STANDARD", i.val)
+			}
+		case itemProperty:
+			val, par, err := parseProperty(s)
+			if err != nil {
+				return nil, err
+			}
+			if tz.Properties.set(i.val, val) {
+				continue
+			}
+			switch i.val {
+			case "TZID":
+				tz.TZID = val
+			case "TZURL":
+				val, err := url.Parse(val)
+				if err != nil {
+					return nil, err
+				}
+				tz.TZURL = val
+			case "LAST-MODIFIED":
+				t, err := parseDateTime(par, val)
+				if err != nil {
+					return nil, err
+				}
+				tz.LastModified = t
+			default:
+				return nil, fmt.Errorf("unexpected property in VTIMEZONE: (%s)", i.val)
+			}
+		default:
+			return nil, fmt.Errorf("unexpected item in VTIMEZONE: (%s)", i.val)
+		}
+	}
+}
+
+func parseTimeZoneMode(s *scanner) (*TimeZoneMode, error) {
+	d := &TimeZoneMode{}
+	for i := s.next(); ; i = s.next() {
+		switch i.typ {
+		case itemEnd:
+			if i.val != "END:DAYLIGHT" && i.val != "END:STANDARD" {
+				return nil, fmt.Errorf("unexpected (%s) END:DAYLIGHT or END:STANDARD", i.val)
+			}
+			return d, nil
+		case itemProperty:
+			val, par, err := parseProperty(s)
+			if err != nil {
+				return nil, err
+			}
+			switch i.val {
+			case "RDATE":
+				d.Rdate = val
+			case "TZNAME":
+				d.TZName = val
+			case "TZOFFSETFROM":
+				val, err := parseDuration(val)
+				if err != nil {
+					return nil, err
+				}
+				d.TZOffsetFrom = val
+			case "TZOFFSETTO":
+				val, err := parseDuration(val)
+				if err != nil {
+					return nil, err
+				}
+				d.TZOffsetTo = val
+			case "DTSTART":
+				t, err := parseDateTime(par, val)
+				if err != nil {
+					return nil, err
+				}
+				d.DTStart = t
+			case "RRULE":
+				val, err := parseRecur(val)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing Recur: %s", err)
+				}
+				d.Rrule = val
+			default:
+				return nil, fmt.Errorf("unexpected property in DAYLIGHT: (%s)", i.val)
+			}
+		default:
+			return nil, fmt.Errorf("unexpected property in DAYLIGHT: (%s)", i.val)
+		}
+	}
+}
+
+func parseDuration(val string) (int, error) {
+	var h, m int
+	_, err := fmt.Sscanf(val[1:], "%02d%02d", &h, &m)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse DURATION value %s", err)
+	}
+	ret := h*3600 + m*60
+	if val[0] == '-' {
+		return ret * -1, nil
 	}
 	return ret, nil
 }
@@ -338,7 +536,12 @@ func parseRecur(val string) (*Rrule, error) {
 				}
 				var num int
 				var weekday string
-				fmt.Sscanf(val, "%d%s", &num, &weekday)
+				if unicode.IsDigit(rune(val[0])) {
+					fmt.Sscanf(val, "%d%s", &num, &weekday)
+				} else {
+					num = 1
+					weekday = val
+				}
 				wd, err := parseIcsDay(weekday)
 				if err != nil {
 					return nil, fmt.Errorf("not valid BYDAY value: %s", err)
@@ -427,180 +630,4 @@ func parseIcsDay(val string) (time.Weekday, error) {
 	default:
 		return 0, fmt.Errorf("not valid Weekday value (%s)", val)
 	}
-}
-
-const (
-	//IcsFormat ics date time format
-	IcsFormat = "20060102T150405"
-	//IcsFormatUTC ics UTC date time format
-	IcsFormatUTC = "20060102T150405Z"
-	//IcsFormatDate ics date format
-	IcsFormatDate = "20060102"
-)
-
-func parseDateTime(par map[string]string, val string) (time.Time, error) {
-	if timeZone, ok := par["TZID"]; ok {
-		loc, err := time.LoadLocation(timeZone)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("cannot load time-zone (%s)", timeZone)
-		}
-		t, err := parseDateTime(nil, val)
-		if err != nil {
-			return time.Time{}, err
-		}
-		return t.In(loc), nil
-	}
-	t, err := time.Parse(IcsFormatUTC, val)
-	if err == nil {
-		return t, nil
-	}
-	t, err = time.Parse(IcsFormat, val)
-	if err == nil {
-		return t, nil
-	}
-	return time.Parse(IcsFormatDate, val)
-}
-
-func parseAlarm(s *scanner) (*Alarm, error) {
-	a := &Alarm{}
-	for i := s.next(); ; i = s.next() {
-		switch i.typ {
-		case itemEnd:
-			if i.val != "END:VALARM" {
-				return nil, fmt.Errorf("unexpected (%s) expected END:VALARM", i.val)
-			}
-			return a, nil
-		case itemProperty:
-			iVal := s.next()
-			if iVal.typ != itemValue {
-				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
-			}
-			val := iVal.val
-			switch i.val {
-			case "TRIGGER":
-				a.Trigger = val
-			}
-		default:
-			return nil, fmt.Errorf("unexpected item in VALARM: (%s)", i.val)
-		}
-	}
-}
-
-func parseTimeZone(s *scanner) (*TimeZone, error) {
-	tz := &TimeZone{}
-	for i := s.next(); ; i = s.next() {
-		switch i.typ {
-		case itemEnd:
-			if i.val != "END:VTIMEZONE" {
-				return nil, fmt.Errorf("unexpected (%s) END:VTIMEZONE", i.val)
-			}
-			return tz, nil
-		case itemBegin:
-			switch i.val {
-			case "BEGIN:DAYLIGHT", "BEGIN:STANDARD":
-				s, err := parseStandard(s)
-				if err != nil {
-					return nil, fmt.Errorf("error parsing STANDARD: %s", err)
-				}
-				tz.Standard = s
-			default:
-				return nil, fmt.Errorf("unexpected (%s) after BEGIN:, expected DAYLIGHT or STANDARD", i.val)
-			}
-		case itemProperty:
-			iVal := s.next()
-			if iVal.typ != itemValue {
-				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
-			}
-			val := iVal.val
-			switch i.val {
-			case "TZID":
-				tz.TZID = val
-			case "TZURL":
-				val, err := url.Parse(val)
-				if err != nil {
-					return nil, err
-				}
-				tz.TZURL = val
-			default:
-				return nil, fmt.Errorf("unexpected property in VTIMEZONE: (%s)", i.val)
-			}
-		default:
-			return nil, fmt.Errorf("unexpected item in VTIMEZONE: (%s)", i.val)
-		}
-	}
-}
-
-func parseStandard(s *scanner) (*Standard, error) {
-	d := &Standard{}
-	for i := s.next(); ; i = s.next() {
-		switch i.typ {
-		case itemEnd:
-			if i.val != "END:DAYLIGHT" && i.val != "END:STANDARD" {
-				return nil, fmt.Errorf("unexpected (%s) END:DAYLIGHT or END:STANDARD", i.val)
-			}
-			return d, nil
-		case itemProperty:
-			iVal := s.next()
-			var par map[string]string
-			if iVal.typ == itemParam {
-				var err error
-				par, err = parseParam(iVal.val)
-				if err != nil {
-					return nil, err
-				}
-				iVal = s.next()
-			}
-			if iVal.typ != itemValue {
-				return nil, fmt.Errorf("unexpected item (%s), expected value", i)
-			}
-			val := iVal.val
-			switch i.val {
-			case "RDATE":
-				d.Rdate = val
-			case "TZNAME":
-				d.TZName = val
-			case "TZOFFSETFROM":
-				val, err := parseDuration(val)
-				if err != nil {
-					return nil, err
-				}
-				d.TZOffsetFrom = val
-			case "TZOFFSETTO":
-				val, err := parseDuration(val)
-				if err != nil {
-					return nil, err
-				}
-				d.TZOffsetTo = val
-			case "DTSTART":
-				t, err := parseDateTime(par, val)
-				if err != nil {
-					return nil, err
-				}
-				d.DTStart = t
-			case "RRULE":
-				val, err := parseRecur(val)
-				if err != nil {
-					return nil, fmt.Errorf("error parsing Recur: %s", err)
-				}
-				d.Rrule = val
-			default:
-				return nil, fmt.Errorf("unexpected property in DAYLIGHT: (%s)", i.val)
-			}
-		default:
-			return nil, fmt.Errorf("unexpected property in DAYLIGHT: (%s)", i.val)
-		}
-	}
-}
-
-func parseDuration(val string) (int, error) {
-	var h, m int
-	_, err := fmt.Sscanf(val[1:], "%02d%02d", &h, &m)
-	if err != nil {
-		return 0, fmt.Errorf("cannot parse DURATION value %s", err)
-	}
-	ret := h*3600 + m*60
-	if val[0] == '-' {
-		return ret * -1, nil
-	}
-	return ret, nil
 }
