@@ -64,7 +64,6 @@ func (l *lexer) run() {
 // emit passes an item back to the client.
 func (l *lexer) emit(t itemType) {
 	l.items <- item{t, l.buf.String()}
-	fmt.Println(item{t, l.buf.String()})
 	l.buf.Reset()
 }
 
