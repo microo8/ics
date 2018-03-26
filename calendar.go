@@ -30,6 +30,18 @@ type Calendar struct {
 	Events     []*Event
 }
 
+//GetEventsByDate returns a list of events which occure on a specified date
+//TODO also chect Rrule
+func (c *Calendar) GetEventsByDate(date time.Time) (events []*Event) {
+	for _, e := range c.Events {
+		if (e.DTStart.Before(date) || e.DTStart.Equal(date)) &&
+			(e.DTEnd.After(date) || e.DTEnd.Equal(date)) {
+			events = append(events, e)
+		}
+	}
+	return
+}
+
 //TimeZone provide a grouping of component properties that defines a time zone.
 type TimeZone struct {
 	Properties   Properties
